@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+filaments.json
+*.egg-info/
+dist/
+build/
+pm3/
+spooldata/
+installer_output/
+filaments - Copy.json
+filaments.csv
+nelko_test_label.png

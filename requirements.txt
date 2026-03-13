@@ -1,0 +1,6 @@
+PyQt6
+pycryptodomex
+pyserial
+Pillow
+qrcode
+python-barcode
