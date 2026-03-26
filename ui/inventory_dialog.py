@@ -61,7 +61,11 @@ class InventoryDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _start_inventory(self):
-        """Clear all physically_present flags to begin inventory."""
+        """Snapshot current flags, then clear all to begin inventory."""
+        self._prior_flags = {
+            e["id"]: e.get("physically_present", False)
+            for e in self.db.get_all()
+        }
         self.db.clear_all_present_flags()
         self._log("Inventory started. All spools marked as not present.")
         self._log("Please start scanning spool labels.\n")
@@ -138,14 +142,18 @@ class InventoryDialog(QDialog):
         self._log_area.append(message)
 
     def reject(self):
-        """Confirm before cancelling mid-inventory."""
-        if self._scanned_ids:
-            reply = QMessageBox.question(
-                self, "Cancel Inventory?",
-                "Cancel the inventory? Spools already scanned will "
-                "remain marked as present.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
+        """Confirm before cancelling — restore prior flags on cancel."""
+        reply = QMessageBox.question(
+            self, "Cancel Inventory?",
+            "Cancel the inventory and restore previous state?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        # Restore the snapshot
+        for entry in self.db.get_all():
+            eid = entry["id"]
+            if eid in self._prior_flags:
+                entry["physically_present"] = self._prior_flags[eid]
+        self.db.save()
         super().reject()
