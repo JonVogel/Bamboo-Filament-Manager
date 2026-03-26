@@ -5,7 +5,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QDialogButtonBox, QGroupBox, QFormLayout,
+    QPushButton, QDialogButtonBox, QGroupBox, QFormLayout, QMessageBox,
 )
 
 from sku_parser import parse_sku
@@ -76,7 +76,7 @@ class SkuDialog(QDialog):
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Add to Library")
+        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText("Add to Inventory")
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self.button_box.accepted.connect(self.accept)
         self.button_box.rejected.connect(self.reject)
@@ -127,6 +127,11 @@ class SkuDialog(QDialog):
                 "All properties will be copied to the new spool."
             )
         else:
+            QMessageBox.information(
+                self, "Product Code Not Found",
+                f"Product code {barcode} was not found in the database.\n\n"
+                "A new entry will be created. Fill in details via Edit after adding."
+            )
             self.lbl_barcode.setText(barcode)
             self.lbl_type.setText("Unknown")
             self.lbl_color.setText("Unknown")

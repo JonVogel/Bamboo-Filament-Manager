@@ -66,12 +66,51 @@ def save_pm3_path(path: str):
     QSettings().setValue("proxmark3/path", path)
 
 
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
 def _run_quietly(cmd: list) -> str | None:
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=5,
+                           creationflags=_NO_WINDOW)
         return r.stdout if r.returncode == 0 else None
     except Exception:
         return None
+
+
+def check_pm3_connection(pm3_path: str, port: str) -> tuple[bool, str]:
+    """Quick connectivity check — runs 'hw version' and returns (ok, message)."""
+    pm3 = find_pm3(pm3_path)
+    if pm3 is None:
+        return False, "Proxmark3 client not found."
+
+    cmd = [str(pm3)]
+    if port:
+        cmd += ["-p", port]
+    cmd += ["-c", "hw version"]
+
+    cwd = str(pm3.parent)
+    env = os.environ.copy()
+    # Walk up from pm3 looking for ProxSpace MinGW DLLs
+    for parent in pm3.parents:
+        candidate = parent / "msys2" / "mingw64" / "bin"
+        if candidate.is_dir():
+            env["PATH"] = str(candidate) + os.pathsep + env.get("PATH", "")
+            break
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=10, cwd=cwd, env=env,
+            creationflags=_NO_WINDOW,
+        )
+        output = result.stdout + result.stderr
+        if result.returncode == 0 and "Proxmark3" in output:
+            return True, "Proxmark3 connected successfully."
+        return False, f"Proxmark3 not responding on {port}.\n\n{output.strip()}"
+    except subprocess.TimeoutExpired:
+        return False, f"Connection timed out on {port}."
+    except Exception as exc:
+        return False, str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +176,6 @@ class ScannerThread(QThread):
             cmd += ["-p", self.port]
         cmd += ["-c", command]
 
-        print(f"[debug] Running: {' '.join(cmd)}")
-
         # Run from the directory containing proxmark3.exe so it finds its DLLs.
         # Also add ProxSpace MinGW paths to PATH if they exist.
         cwd = str(Path(pm3).parent)
@@ -155,10 +192,9 @@ class ScannerThread(QThread):
                 timeout=timeout,
                 cwd=cwd,
                 env=env,
+                creationflags=_NO_WINDOW,
             )
             output = result.stdout + result.stderr
-            print(f"[debug] returncode={result.returncode}")
-            print(f"[debug] output:\n{output}")
             return result.returncode == 0, output
         except subprocess.TimeoutExpired:
             return False, "Command timed out."
@@ -218,7 +254,6 @@ class ScannerThread(QThread):
         for old_file in pm3_dir.glob(f"hf-mf-{uid_upper}-*"):
             try:
                 old_file.unlink()
-                print(f"[debug] Removed old file: {old_file}")
             except Exception:
                 pass
 
@@ -260,9 +295,8 @@ class ScannerThread(QThread):
         try:
             shutil.copy2(str(src), str(dest))
             json_path = str(dest)
-            print(f"[debug] Dump file copied to: {dest}")
-        except Exception as exc:
-            print(f"[debug] Warning: could not copy dump to spooldata: {exc}")
+        except Exception:
+            pass
 
         # ----------------------------------------------------------------
         # Step 3 — Parse and emit
@@ -272,19 +306,6 @@ class ScannerThread(QThread):
                 raw = json.load(f)
             tag = Tag.from_json_dump(raw)
             tag_dict = tag.to_dict()
-
-            # Print spool data to command line
-            print("\n" + "=" * 60)
-            print("  SPOOL DATA")
-            print("=" * 60)
-            for key, value in tag_dict.items():
-                if isinstance(value, dict):
-                    print(f"  {key}:")
-                    for k2, v2 in value.items():
-                        print(f"    {k2}: {v2}")
-                else:
-                    print(f"  {key}: {value}")
-            print("=" * 60 + "\n")
 
             self._beep(1175, 150)  # Scan complete
             self.status_update.emit("Done!")
@@ -308,18 +329,11 @@ class ScannerThread(QThread):
     @staticmethod
     def _find_proxspace_bin(pm3: Path) -> str | None:
         """Find additional DLL directories if needed."""
-        # If using bundled pm3, DLLs are in the same directory — no extra path needed.
-        # For external installs, check for ProxSpace.
+        # Walk up from proxmark3.exe looking for msys2/mingw64/bin
         for parent in pm3.parents:
             candidate = parent / "msys2" / "mingw64" / "bin"
             if candidate.is_dir():
                 return str(candidate)
-            for sibling in parent.iterdir():
-                if sibling.is_dir() and "proxspace" in sibling.name.lower():
-                    candidate = sibling / "msys2" / "mingw64" / "bin"
-                    if candidate.is_dir():
-                        return str(candidate)
-            break
         return None
 
     def _extract_uid(self, output: str) -> str | None:

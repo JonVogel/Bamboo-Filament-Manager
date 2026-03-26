@@ -80,7 +80,7 @@ class ScanDialog(QDialog):
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        ok_label = "Remove from Library" if self._mode == "remove" else "Add to Library"
+        ok_label = "Remove from Inventory" if self._mode == "remove" else "Add to Inventory"
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
         self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self.button_box.accepted.connect(self._on_accept)
@@ -144,7 +144,7 @@ class ScanDialog(QDialog):
         weight = tag_dict.get("spool_weight", "?")
         uid = tag_dict.get("uid", "")
 
-        # Auto-close for existing spools — no need to show "Add to Library"
+        # Auto-close for existing spools — no need to show "Add to Inventory"
         db = self._db or (getattr(self.parent(), 'db', None) if self.parent() else None)
         if db and self._mode != "remove":
             existing = db.get_by_uid(uid) if uid else None
@@ -203,12 +203,15 @@ class ScanDialog(QDialog):
 
             # Fall back to color hex matching for color name
             if not self.color_name_edit.text():
-                learned = db._find_color_name(tag_dict.get("filament_color", ""))
+                learned = db._find_color_name(
+                    tag_dict.get("filament_color", ""),
+                    tag_dict.get("detailed_filament_type") or tag_dict.get("filament_type", ""),
+                )
                 if learned:
                     self.color_name_edit.setText(learned)
 
         # Disable autoDefault on all buttons so Enter in the text fields
-        # doesn't trigger "Add to Library" (barcode scanners send Enter)
+        # doesn't trigger "Add to Inventory" (barcode scanners send Enter)
         ok_btn = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
         ok_btn.setEnabled(True)
         ok_btn.setDefault(False)

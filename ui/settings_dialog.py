@@ -7,10 +7,10 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QLineEdit, QFileDialog, QDialogButtonBox,
-    QFormLayout,
+    QFormLayout, QApplication,
 )
 
-from scanner import find_pm3, get_saved_pm3_path, save_pm3_path
+from scanner import find_pm3, get_saved_pm3_path, save_pm3_path, check_pm3_connection
 from printer_manager import driver_names
 
 
@@ -72,7 +72,16 @@ class SettingsDialog(QDialog):
             lambda: _populate_ports_combo(self.port_combo)
         )
         port_row.addWidget(self.refresh_btn)
+        self.test_btn = QPushButton("Test")
+        self.test_btn.setAutoDefault(False)
+        self.test_btn.clicked.connect(self._on_test)
+        port_row.addWidget(self.test_btn)
         form.addRow("COM Port:", port_row)
+
+        # Status label for test results
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        form.addRow("", self._status)
 
         layout.addLayout(form)
 
@@ -91,6 +100,26 @@ class SettingsDialog(QDialog):
         )
         if path:
             self.pm3_path.setText(path)
+
+    def _on_test(self):
+        """Test connectivity to the Proxmark3 reader."""
+        pm3_text = self.pm3_path.text().strip()
+        port = self.port_combo.currentText()
+        if not port or port == "No ports found":
+            self._status.setStyleSheet("color: red;")
+            self._status.setText("No COM port selected.")
+            return
+
+        self._status.setStyleSheet("color: #666;")
+        self._status.setText("Testing connection...")
+        QApplication.processEvents()
+
+        ok, msg = check_pm3_connection(pm3_text, port)
+        if ok:
+            self._status.setStyleSheet("color: green;")
+        else:
+            self._status.setStyleSheet("color: red;")
+        self._status.setText(msg)
 
     def _on_accept(self):
         settings = QSettings()

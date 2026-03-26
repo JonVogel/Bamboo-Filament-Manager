@@ -73,6 +73,11 @@ class FilamentDB:
         """
         entry = dict(tag_dict)
 
+        # Ensure filament_color always has # prefix
+        fc = entry.get("filament_color", "")
+        if fc and not fc.startswith("#"):
+            entry["filament_color"] = "#" + fc
+
         # If this scan has a UID, look for an existing UID-less entry to merge into
         # (e.g. a spool added via barcode scan that is now being RFID-scanned)
         merged = self._try_merge_rfid(entry)
@@ -86,6 +91,8 @@ class FilamentDB:
 
         # Auto-populate fields from existing entries with the same product
         self._learn_from_existing(entry)
+
+        entry["physically_present"] = True
 
         # Initialise inventory fields with sensible defaults
         entry.setdefault("__inventory__", {})
@@ -136,6 +143,7 @@ class FilamentDB:
             if value and not candidate.get(key):
                 candidate[key] = value
 
+        candidate["physically_present"] = True
         # Always set the UID and production date from the RFID scan
         candidate["uid"] = uid
         if entry.get("production_date"):
@@ -339,6 +347,26 @@ class FilamentDB:
         # Format diameter without trailing zeros
         diam_str = f"{diameter:g}"
         return f"{variant_id}-{diam_str}-{int(weight)}-SPL"
+
+    # ------------------------------------------------------------------
+    # Physical inventory
+    # ------------------------------------------------------------------
+
+    def clear_all_present_flags(self):
+        """Set physically_present to False on all active entries."""
+        for e in self._entries:
+            if not e.get("deleted"):
+                e["physically_present"] = False
+        self.save()
+
+    def mark_present(self, entry_id: str) -> bool:
+        """Mark an entry as physically present. Returns True if found."""
+        entry = self.get_by_id(entry_id)
+        if entry is None:
+            return False
+        entry["physically_present"] = True
+        self.save()
+        return True
 
     # ------------------------------------------------------------------
     # Maintenance
@@ -553,7 +581,10 @@ class FilamentDB:
 
         # Fall back to color hex matching for color_name
         if not entry.get("color_name"):
-            learned_name = self._find_color_name(entry.get("filament_color", ""))
+            learned_name = self._find_color_name(
+                entry.get("filament_color", ""),
+                entry.get("detailed_filament_type") or entry.get("filament_type", ""),
+            )
             if learned_name:
                 entry["color_name"] = learned_name
 
@@ -567,13 +598,29 @@ class FilamentDB:
             c = "#" + c
         return c[:7]  # strip alpha channel
 
-    def _find_color_name(self, hex_color: str) -> str:
-        """Find a color_name from any entry (including deleted) with the same color hex."""
+    def _find_color_name(self, hex_color: str, detailed_type: str = "") -> str:
+        """Find a color_name from any entry with the same color hex and filament type.
+
+        Special case: Bambu #000000 is "Charcoal" for PLA Matte, "Black" for everything else.
+        """
         if not hex_color:
             return ""
         target = self._normalize_color(hex_color)
         if not target:
             return ""
+        # Bambu naming quirk: matte black (#000000) is "Charcoal", other black is "Black"
+        if target == "#000000":
+            is_matte = (detailed_type or "").strip().lower() == "pla matte"
+            return "Charcoal" if is_matte else "Black"
+        # First pass: match color AND detailed filament type
+        if detailed_type:
+            for e in self._entries:
+                c = self._normalize_color(e.get("filament_color") or "")
+                etype = e.get("detailed_filament_type") or e.get("filament_type") or ""
+                name = e.get("color_name", "")
+                if c == target and etype == detailed_type and name:
+                    return name
+        # Second pass: match color only (fallback)
         for e in self._entries:
             c = self._normalize_color(e.get("filament_color") or "")
             name = e.get("color_name", "")
