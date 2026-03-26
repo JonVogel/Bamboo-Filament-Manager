@@ -358,9 +358,9 @@ class MainWindow(QMainWindow):
         self._search_building = False  # True while user is typing a search
         self.search_box.textChanged.connect(self._on_search_changed)
         # Restore search history from previous session
-        history = QSettings().value("search/history", [])
+        history = QSettings().value("search/history", [], type=list)
         if history:
-            self._search_combo.addItems(history)
+            self._search_combo.addItems([str(h) for h in history])
             self._search_combo.setCurrentIndex(-1)
             self.search_box.clear()
         tb.addWidget(self._search_combo)
