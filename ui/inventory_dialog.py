@@ -97,8 +97,8 @@ class InventoryDialog(QDialog):
             self._log(f"  [!] SPL-{spool_num:04d} — NOT FOUND")
             return
 
-        # Mark as present
-        self.db.mark_present(entry["id"])
+        # Mark as present (in-memory only — saved on finish/cancel)
+        entry["physically_present"] = True
         self._scanned_ids.add(entry["id"])
 
         color = entry.get("color_name", "")
@@ -109,6 +109,7 @@ class InventoryDialog(QDialog):
 
     def _on_finish(self):
         """End inventory and report missing spools."""
+        self.db.save()
         missing = [e for e in self.db.get_all()
                    if not e.get("physically_present")]
 
