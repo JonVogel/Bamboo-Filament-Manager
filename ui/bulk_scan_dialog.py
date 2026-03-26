@@ -75,7 +75,7 @@ class BulkScanDialog(QDialog):
 
         # Save / Skip buttons for current tag
         tag_btn_row = QHBoxLayout()
-        self.save_btn = QPushButton("Save to Library")
+        self.save_btn = QPushButton("Save to Inventory")
         self.save_btn.setAutoDefault(False)
         self.save_btn.clicked.connect(self._save_current)
         self.save_btn.setEnabled(False)
@@ -204,7 +204,7 @@ class BulkScanDialog(QDialog):
                 self._log(f"Restored {spool_id}: {existing_type}")
                 self._updated_count += 1
             else:
-                self._log(f"Already in library: {spool_id}: {existing_type}")
+                self._log(f"Already in inventory: {spool_id}: {existing_type}")
                 self._skipped_count += 1
             self._current_tag = None
             self._update_counter()
@@ -227,7 +227,7 @@ class BulkScanDialog(QDialog):
                 f"<b>Color:</b> {color}<br>"
                 f"<b>Weight:</b> {weight} g<br>"
                 f"<b>UID:</b> {uid}<br><br>"
-                f"<span style='color: #c70;'>Already in library as '{existing_type}'.<br>"
+                f"<span style='color: #c70;'>Already in inventory as '{existing_type}'.<br>"
                 f"{status_msg}</span>"
             )
         else:
@@ -278,7 +278,10 @@ class BulkScanDialog(QDialog):
 
         # Fall back to color hex matching for color name
         if not self.color_name_edit.text():
-            learned = self.db._find_color_name(tag_dict.get("filament_color", ""))
+            learned = self.db._find_color_name(
+                tag_dict.get("filament_color", ""),
+                tag_dict.get("detailed_filament_type") or tag_dict.get("filament_type", ""),
+            )
             if learned:
                 self.color_name_edit.setText(learned)
 
@@ -333,7 +336,7 @@ class BulkScanDialog(QDialog):
             else:
                 self.db.add(self._current_tag)
                 self.added_count += 1
-                self._log("Saved to library.")
+                self._log("Saved to inventory.")
 
         self._current_tag = None
         self._update_counter()

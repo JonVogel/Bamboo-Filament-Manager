@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QToolBar, QToolButton, QLabel, QFileDialog,
     QMessageBox, QStatusBar, QFrame, QSplitter,
-    QGroupBox, QGridLayout, QMenu, QInputDialog, QLineEdit,
+    QGroupBox, QGridLayout, QMenu, QInputDialog, QLineEdit, QComboBox,
     QStyledItemDelegate, QStyleOptionViewItem,
     QAbstractItemView, QStyle, QWidgetAction, QCheckBox,
 )
@@ -21,6 +21,7 @@ from rfid_parser import load_file
 from ui.bulk_scan_dialog import BulkScanDialog
 from ui.edit_dialog import EditDialog
 from ui.scan_dialog import ScanDialog
+from ui.inventory_dialog import InventoryDialog
 from ui.settings_dialog import SettingsDialog, PrinterSettingsDialog
 from ui.sku_dialog import SkuDialog
 
@@ -61,6 +62,7 @@ _STORE_SLUGS = {
     "PET-CF":             "pet-cf",
     "PPA-CF":             "ppa-cf",
     "PPS-CF":             "pps-cf",
+    "Support for PLA":    "support_for_pla_new",
 }
 
 _STORE_BASE = "https://us.store.bambulab.com/products/"
@@ -111,6 +113,8 @@ COL_TRAY_UID = 25
 COL_XCAM     = 26
 COL_COLOR2   = 27
 COL_COLOR_CT = 28
+COL_UID2     = 29
+COL_PRESENT  = 30
 
 COLUMN_LABELS = [
     "Spool ID", "Color", "Type", "Weight", "Remaining", "Diameter",
@@ -118,7 +122,7 @@ COLUMN_LABELS = [
     "UID", "Material ID", "Variant ID", "Remaining Length", "Filament Length",
     "Spool Width", "Nozzle Diameter", "Tare Weight", "Bed Temp",
     "Drying Temp", "Drying Time", "Production Date", "Notes",
-    "Tray UID", "X-Cam Info", "Color 2", "Color Count",
+    "Tray UID", "X-Cam Info", "Color 2", "Color Count", "UID 2", "Present",
 ]
 
 # Columns hidden by default (user can toggle via column chooser)
@@ -127,7 +131,7 @@ _DEFAULT_HIDDEN = {
     COL_UID, COL_MAT_ID, COL_VAR_ID, COL_REM_LEN, COL_FIL_LEN,
     COL_SPOOL_W, COL_NOZ_DIAM, COL_TARE, COL_BED_TEMP, COL_DRY_TEMP,
     COL_DRY_TIME, COL_PROD_DATE, COL_NOTES, COL_TRAY_UID, COL_XCAM,
-    COL_COLOR2, COL_COLOR_CT,
+    COL_COLOR2, COL_COLOR_CT, COL_UID2, COL_PRESENT,
 }
 
 
@@ -224,6 +228,7 @@ class MainWindow(QMainWindow):
 
         self.refresh_table()
         self._restore_geometry()
+        self.table.setFocus()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -314,6 +319,9 @@ class MainWindow(QMainWindow):
         self.act_printer_settings.setStatusTip("Configure label printer")
         self.act_printer_settings.triggered.connect(self._on_printer_settings)
         settings_menu.addSeparator()
+        self.act_inventory = settings_menu.addAction("Physical Inventory")
+        self.act_inventory.setStatusTip("Reconcile physical stock by scanning spool labels")
+        self.act_inventory.triggered.connect(self._on_physical_inventory)
         self.act_compress = settings_menu.addAction("Compress DB")
         self.act_compress.setStatusTip("Remove duplicate deleted entries to shrink the database")
         self.act_compress.triggered.connect(self._on_compress)
@@ -336,13 +344,26 @@ class MainWindow(QMainWindow):
         self.act_filter_open.toggled.connect(self._apply_filters)
         tb.addAction(self.act_filter_open)
 
-        # -- Quick access: Search box --
-        self.search_box = QLineEdit()
+        # -- Quick access: Search box with history dropdown --
+        self._search_combo = QComboBox()
+        self._search_combo.setEditable(True)
+        self._search_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._search_combo.setMaximumWidth(200)
+        self._search_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self._search_combo.setMinimumContentsLength(15)
+        self.search_box = self._search_combo.lineEdit()
         self.search_box.setPlaceholderText("Search...")
         self.search_box.setClearButtonEnabled(True)
-        self.search_box.setMaximumWidth(200)
-        self.search_box.textChanged.connect(self._apply_filters)
-        tb.addWidget(self.search_box)
+        self._search_building = False  # True while user is typing a search
+        self.search_box.textChanged.connect(self._on_search_changed)
+        # Restore search history from previous session
+        history = QSettings().value("search/history", [])
+        if history:
+            self._search_combo.addItems(history)
+            self._search_combo.setCurrentIndex(-1)
+            self.search_box.clear()
+        tb.addWidget(self._search_combo)
 
         # -- Quick access: Columns --
         self.act_columns = QAction("Columns", self)
@@ -376,11 +397,13 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(COLUMN_LABELS)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(COL_COLOR, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(COL_TYPE, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(COL_SKU, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(COL_BARCODE, QHeaderView.ResizeMode.Interactive)
         header.setSectionResizeMode(COL_LOCATION, QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
+        header.setSectionsMovable(True)
         self.table.setColumnWidth(COL_TYPE, 120)
         self.table.setColumnWidth(COL_SKU, 160)
         self.table.setColumnWidth(COL_BARCODE, 120)
@@ -399,6 +422,7 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSortIndicatorShown(True)
         self.table.setItemDelegateForColumn(COL_COLOR, ColorDelegate(self.table))
         self.table.installEventFilter(self)  # Catch scanner keystrokes before table
+        self.installEventFilter(self)  # Also catch when table doesn't have focus
 
         # Column chooser — right-click header to toggle column visibility
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -504,6 +528,10 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, COL_XCAM, self._ro_cell(str(entry.get("x_cam_info", ""))))
             self.table.setItem(row, COL_COLOR2, self._ro_cell(entry.get("filament_color2", "")))
             self.table.setItem(row, COL_COLOR_CT, self._ro_cell(str(entry.get("filament_color_count", ""))))
+            self.table.setItem(row, COL_UID2, self._ro_cell(entry.get("uid2", "")))
+            present = entry.get("physically_present")
+            self.table.setItem(row, COL_PRESENT, self._ro_cell(
+                "Yes" if present else ("No" if present is False else "")))
 
             # Store entry id in column 0 user data
             self.table.item(row, COL_SPOOL).setData(Qt.ItemDataRole.UserRole, entry["id"])
@@ -816,6 +844,38 @@ class MainWindow(QMainWindow):
         else:
             self.search_box.setText(filament_type)
 
+    def _on_search_changed(self, text: str):
+        """Update search history live as the user types, then apply filters."""
+        combo = self._search_combo
+        stripped = text.strip()
+        if not stripped:
+            # User cleared the box — finalize the current search
+            self._search_building = False
+        elif self._search_building:
+            # Still typing — replace the top entry with the longer string
+            if combo.count() > 0:
+                combo.setItemText(0, stripped)
+        else:
+            # Starting a new search — insert a new entry at the top
+            self._search_building = True
+            # Remove duplicate if it already exists
+            idx = combo.findText(stripped)
+            if idx >= 0:
+                combo.removeItem(idx)
+            combo.insertItem(0, stripped)
+            # Trim to 10 entries
+            while combo.count() > 10:
+                combo.removeItem(combo.count() - 1)
+        self._save_search_history()
+        if hasattr(self, "table"):
+            self._apply_filters()
+
+    def _save_search_history(self):
+        """Persist the search dropdown entries to QSettings."""
+        combo = self._search_combo
+        items = [combo.itemText(i) for i in range(combo.count()) if combo.itemText(i).strip()]
+        QSettings().setValue("search/history", items)
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -869,15 +929,23 @@ class MainWindow(QMainWindow):
                         self.db.update(existing["id"], {"uid2": uid})
             if existing:
                 if dlg.auto_closed:
-                    # Dialog auto-closed — select the row (scanner already undeleted if needed)
+                    # Dialog auto-closed — undelete if needed, then select the row
+                    was_deleted = existing.get("deleted", False)
+                    if was_deleted:
+                        self.db.undelete(existing["id"])
+                    existing["physically_present"] = True
+                    self.db.update(existing["id"], {"physically_present": True})
                     dtype = existing.get("detailed_filament_type") or existing.get("filament_type", "Unknown")
+                    color = existing.get("color_name", "")
+                    label = f"{dtype} — {color}" if color else dtype
                     self.refresh_table()
                     self._select_entry(existing["id"])
-                    self.status.showMessage(f"Found existing spool: {dtype}", 3000)
+                    action = "Restored" if was_deleted else "Found existing"
+                    self.status.showMessage(f"{action} spool: {label}", 3000)
                     return
                 dtype = existing.get("detailed_filament_type") or existing.get("filament_type", "Unknown")
                 was_deleted = existing.get("deleted", False)
-                msg = f"This spool (UID: {uid}) is already in the library as '{dtype}'."
+                msg = f"This spool (UID: {uid}) is already in the inventory as '{dtype}'."
                 if was_deleted:
                     msg += "\n(It was previously deleted.)"
                 msg += "\n\nDo you want to update it with the new scan data?"
@@ -1060,6 +1128,8 @@ class MainWindow(QMainWindow):
             # First run or column count changed — apply default hidden columns
             for col in _DEFAULT_HIDDEN:
                 self.table.setColumnHidden(col, True)
+        # Re-assert after restoreState (which overwrites it from the old saved value)
+        self.table.horizontalHeader().setSectionsMovable(True)
         splitter_state = settings.value("mainwindow/splitter_state")
         if splitter_state:
             self.splitter.restoreState(splitter_state)
@@ -1106,10 +1176,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):
-        """Intercept keystrokes on the table to capture barcode scanner input."""
-        if obj is self.table and event.type() == QEvent.Type.KeyPress:
+        """Intercept keystrokes to capture barcode scanner input."""
+        if event.type() == QEvent.Type.KeyPress and (obj is self.table or obj is self):
             # Don't intercept anything while a cell is being edited
             if self.table.state() == QAbstractItemView.State.EditingState:
+                return False
+            # Don't intercept if a child widget (search box, etc.) has focus
+            focus = self.focusWidget()
+            if focus and focus is not self.table and focus is not self:
                 return False
 
             key = event.key()
@@ -1135,13 +1209,42 @@ class MainWindow(QMainWindow):
         if m:
             spool_num = int(m.group(1))
             entry = self.db.get_by_spool_number(spool_num)
+            if not entry:
+                # Check deleted entries
+                for e in self.db.get_all_including_deleted():
+                    if e.get("deleted") and e.get("spool_number") == spool_num:
+                        entry = e
+                        break
+                if entry:
+                    dtype = entry.get("detailed_filament_type") or entry.get("filament_type", "Unknown")
+                    color = entry.get("color_name", "")
+                    label = f"{dtype} — {color}" if color else dtype
+                    reply = QMessageBox.question(
+                        self, "Restore Deleted Spool?",
+                        f"SPL-{spool_num:04d} ({label}) was previously deleted.\n\n"
+                        "Restore it to the inventory?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    )
+                    if reply == QMessageBox.StandardButton.Yes:
+                        self.db.undelete(entry["id"])
+                        self.db.update(entry["id"], {"physically_present": True})
+                        self.refresh_table()
+                        self._select_entry(entry["id"])
+                        self.status.showMessage(f"Restored SPL-{spool_num:04d}: {label}", 3000)
+                    return
             if entry:
+                self.db.update(entry["id"], {"physically_present": True})
                 self._select_entry(entry["id"])
                 spool_id = f"SPL-{spool_num:04d}"
                 dtype = entry.get("detailed_filament_type") or entry.get("filament_type", "")
-                self.status.showMessage(f"Found {spool_id}: {dtype}", 3000)
+                color = entry.get("color_name", "")
+                label = f"{dtype} — {color}" if color else dtype
+                self.status.showMessage(f"Found {spool_id}: {label}", 3000)
             else:
-                self.status.showMessage(f"No spool found for SPL-{spool_num:04d}", 3000)
+                QMessageBox.warning(
+                    self, "Spool Not Found",
+                    f"SPL-{spool_num:04d} was not found in the inventory.",
+                )
             return
 
         # Not a spool label — might be a product barcode, try SKU lookup
@@ -1162,11 +1265,13 @@ class MainWindow(QMainWindow):
             return
         entry = self.db.get_by_id(entry_id)
         dtype = entry.get("detailed_filament_type") or entry.get("filament_type", "this filament")
+        color = entry.get("color_name", "")
+        label = f"'{dtype} — {color}'" if color else f"'{dtype}'"
 
         reply = QMessageBox.question(
             self,
             "Delete Filament",
-            f"Delete '{dtype}' from the library?",
+            f"Delete {label} from the inventory?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -1175,7 +1280,7 @@ class MainWindow(QMainWindow):
             self.status.showMessage("Filament deleted.", 3000)
 
     def _on_remove_by_scan(self):
-        dlg = ScanDialog(self, mode="remove")
+        dlg = ScanDialog(self, mode="remove", db=self.db)
         if dlg.exec() != ScanDialog.DialogCode.Accepted or not dlg.tag_data:
             return
         uid = dlg.tag_data.get("uid", "")
@@ -1186,7 +1291,7 @@ class MainWindow(QMainWindow):
         if not existing:
             QMessageBox.information(
                 self, "Remove by Scan",
-                f"No spool with UID {uid} found in the library.",
+                f"No spool with UID {uid} found in the inventory.",
             )
             return
         if existing.get("deleted"):
@@ -1199,7 +1304,7 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Remove by Scan",
-            f"Delete '{dtype}' (UID: {uid}) from the library?",
+            f"Delete '{dtype}' (UID: {uid}) from the inventory?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -1231,20 +1336,27 @@ class MainWindow(QMainWindow):
         if not entry:
             QMessageBox.information(
                 self, "Delete by Spool ID",
-                f"No spool with ID SPL-{spool_num:04d} found in the library.",
+                f"No spool with ID SPL-{spool_num:04d} found in the inventory.",
             )
             return
         dtype = entry.get("detailed_filament_type") or entry.get("filament_type", "Unknown")
+        color = entry.get("color_name", "")
+        label = f"'{dtype} — {color}'" if color else f"'{dtype}'"
         reply = QMessageBox.question(
             self,
             "Delete by Spool ID",
-            f"Delete '{dtype}' (SPL-{spool_num:04d}) from the library?",
+            f"Delete {label} (SPL-{spool_num:04d}) from the inventory?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self.db.delete(entry["id"])
             self.refresh_table()
             self.status.showMessage(f"Spool SPL-{spool_num:04d} removed.", 3000)
+
+    def _on_physical_inventory(self):
+        dlg = InventoryDialog(self.db, self)
+        dlg.exec()
+        self.refresh_table()
 
     def _on_compress(self):
         removed = self.db.compress()
@@ -1366,12 +1478,12 @@ class MainWindow(QMainWindow):
             "<li>Click <b>Start Scan</b>, then hold a filament spool's RFID tag near "
             "the Proxmark3's <b>HF antenna</b> (the small inner coil).</li>"
             "<li>After the scan completes, optionally enter a product code, SKU, and color name, "
-            "then click <b>Add to Library</b>.</li>"
+            "then click <b>Add to Inventory</b>.</li>"
             "</ol>"
 
             "<h2>Toolbar Buttons</h2>"
             "<table cellpadding='4'>"
-            "<tr><td><b>Scan Tag</b></td><td>Scan a single filament spool RFID tag and add it to your library.</td></tr>"
+            "<tr><td><b>Scan Tag</b></td><td>Scan a single filament spool RFID tag and add it to your inventory.</td></tr>"
             "<tr><td><b>Bulk Scan</b></td><td>Scan multiple tags in sequence without closing the dialog.</td></tr>"
             "<tr><td><b>Add Manual</b></td><td>Manually create a filament entry (no RFID reader needed).</td></tr>"
             "<tr><td><b>Import File</b></td><td>Import a .bin, .json, or .nfc tag dump file.</td></tr>"
@@ -1379,8 +1491,9 @@ class MainWindow(QMainWindow):
             "<tr><td><b>Settings</b></td><td>Configure Proxmark3 path and COM port.</td></tr>"
             "<tr><td><b>Edit</b></td><td>Open a full edit dialog for the selected spool.</td></tr>"
             "<tr><td><b>Delete</b></td><td>Soft-delete the selected spool (can be restored on re-scan).</td></tr>"
-            "<tr><td><b>Remove by Scan</b></td><td>Scan a used-up spool's tag to delete it from your library.</td></tr>"
+            "<tr><td><b>Remove by Scan</b></td><td>Scan a used-up spool's tag to delete it from your inventory.</td></tr>"
             "<tr><td><b>Weigh Spool</b></td><td>Enter a scale reading to calculate remaining filament.</td></tr>"
+            "<tr><td><b>Physical Inventory</b></td><td>Scan spool labels to verify which spools are physically present. Missing spools are shown for review.</td></tr>"
             "<tr><td><b>Compress DB</b></td><td>Remove duplicate deleted entries to shrink the database.</td></tr>"
             "<tr><td><b>Export CSV</b></td><td>Export your full inventory to a CSV file for Excel.</td></tr>"
             "<tr><td><b>Import CSV</b></td><td>Import data from a CSV file. Matches by ID to update existing entries.</td></tr>"
@@ -1391,6 +1504,17 @@ class MainWindow(QMainWindow):
             "<p><b>Double-click</b> any cell in the table to edit it inline (type, weight, "
             "remaining, diameter, nozzle temp, SKU, product code, location).</p>"
             "<p><b>Right-click</b> a row to access Edit, Weigh, Set Color Name, or Delete.</p>"
+
+            "<h2>Reordering Filament</h2>"
+            "<p><b>Right-click</b> a spool and select <b>Reorder from Bambu Lab...</b> "
+            "to open the product page in your browser. The app will get you as close "
+            "to the right place in the store as possible by matching the filament type.</p>"
+            "<p>For an exact match (including color), enable the <b>Store ID</b> column "
+            "(via Columns) and paste the variant ID from the store URL. "
+            "To find it: go to the Bambu Lab store, navigate to your filament, and "
+            "select your color. The URL will update to include "
+            "<code>?id=12345</code> — copy that number into the Store ID field. "
+            "The Reorder link will then take you directly to the exact filament and color.</p>"
 
             "<h2>Weighing Spools</h2>"
             "<p>Select a spool and click <b>Weigh Spool</b>. Place the spool on a scale "
@@ -1431,7 +1555,7 @@ class MainWindow(QMainWindow):
             self,
             "About Bamboo Filament Manager",
             "<h2>Bamboo Filament Manager</h2>"
-            "<p>Version 0.1.0</p>"
+            "<p>Version 0.2.0</p>"
             "<p>Manage your filament spool inventory.<br>"
             "Scan RFID tags, track usage, and organize your collection.</p>"
             "<p><b>Requirements:</b> Proxmark3 (Iceman fork) with an HF antenna.<br>"
