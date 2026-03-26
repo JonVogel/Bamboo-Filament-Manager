@@ -610,7 +610,7 @@ class FilamentDB:
             return ""
         # Bambu naming quirk: matte black (#000000) is "Charcoal", other black is "Black"
         if target == "#000000":
-            is_matte = "matte" in (detailed_type or "").lower()
+            is_matte = (detailed_type or "").strip().lower() == "pla matte"
             return "Charcoal" if is_matte else "Black"
         # First pass: match color AND detailed filament type
         if detailed_type:
