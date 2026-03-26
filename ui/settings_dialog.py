@@ -7,7 +7,7 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QPushButton, QLineEdit, QFileDialog, QDialogButtonBox,
-    QFormLayout, QMessageBox, QApplication,
+    QFormLayout, QApplication,
 )
 
 from scanner import find_pm3, get_saved_pm3_path, save_pm3_path, check_pm3_connection
