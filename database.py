@@ -432,6 +432,48 @@ class FilamentDB:
     }
     _FLOAT_FIELDS = {"filament_diameter", "spool_width"}
 
+    def export_db(self, path: str | Path):
+        """Export the full database (including deleted entries) to a JSON file."""
+        import copy
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(copy.deepcopy(self._entries), f, indent=2, default=str)
+
+    def import_db(self, path: str | Path) -> tuple[int, int]:
+        """Import entries from a JSON database export.
+        Matches by id; updates if found, adds if new.
+        Returns (added, updated) counts."""
+        with open(path, "r", encoding="utf-8") as f:
+            incoming = json.load(f)
+        if not isinstance(incoming, list):
+            raise ValueError("Expected a JSON array of entries")
+
+        added = updated = 0
+        existing_ids = {e["id"]: e for e in self._entries if "id" in e}
+
+        for entry in incoming:
+            eid = entry.get("id")
+            if eid and eid in existing_ids:
+                # Merge into existing entry
+                target = existing_ids[eid]
+                for k, v in entry.items():
+                    if k == "__inventory__":
+                        target.setdefault("__inventory__", {}).update(v)
+                    elif k == "temperatures":
+                        target.setdefault("temperatures", {}).update(v)
+                    else:
+                        target[k] = v
+                updated += 1
+            else:
+                if not eid:
+                    entry["id"] = str(uuid.uuid4())
+                entry.setdefault("__inventory__", {})
+                self._entries.append(entry)
+                added += 1
+
+        self._backfill_spool_numbers()
+        self.save()
+        return added, updated
+
     def import_csv(self, path: str | Path) -> tuple[int, int]:
         """Import entries from a CSV file exported by Export CSV.
         Matches rows to existing entries by id; updates if found, adds if new.

@@ -218,6 +218,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db
         self._refreshing = False
+        self._grouped_view = False
+        self._saved_column_visibility = {}
         self._scan_buffer = ""  # Keystroke buffer for barcode scanner input
         self.setWindowTitle("Bamboo Filament Manager")
         self.resize(1000, 600)
@@ -303,6 +305,13 @@ class MainWindow(QMainWindow):
         self.act_import = io_menu.addAction("Import Dump File")
         self.act_import.setStatusTip("Import a .bin or .json dump file")
         self.act_import.triggered.connect(self._on_import)
+        io_menu.addSeparator()
+        self.act_export_db = io_menu.addAction("Export Database")
+        self.act_export_db.setStatusTip("Export the full database to a JSON file for backup or transfer")
+        self.act_export_db.triggered.connect(self._on_export_db)
+        self.act_import_db = io_menu.addAction("Import Database")
+        self.act_import_db.setStatusTip("Import a database JSON file (merges with existing data)")
+        self.act_import_db.triggered.connect(self._on_import_db)
 
         btn_io = QToolButton()
         btn_io.setText("Import/Export")
@@ -343,6 +352,12 @@ class MainWindow(QMainWindow):
         self.act_filter_open.setStatusTip("Show only spools that have been opened (remaining < full weight)")
         self.act_filter_open.toggled.connect(self._apply_filters)
         tb.addAction(self.act_filter_open)
+
+        self.act_group_view = QAction("Group by Color", self)
+        self.act_group_view.setCheckable(True)
+        self.act_group_view.setStatusTip("Group inventory by color and filament type")
+        self.act_group_view.toggled.connect(self._on_group_toggled)
+        tb.addAction(self.act_group_view)
 
         # -- Quick access: Search box with history dropdown --
         self._search_combo = QComboBox()
@@ -467,6 +482,16 @@ class MainWindow(QMainWindow):
         self._refreshing = True
         self.table.setSortingEnabled(False)
         entries = self.db.get_all()
+
+        if self._grouped_view:
+            self._populate_grouped(entries)
+            self.table.setSortingEnabled(True)
+            self._apply_filters()
+            self._update_summary()
+            self._update_action_states()
+            self._refreshing = False
+            return
+
         self.table.setRowCount(len(entries))
 
         for row, entry in enumerate(entries):
@@ -542,6 +567,83 @@ class MainWindow(QMainWindow):
         self._update_action_states()
         self._refreshing = False
 
+    def _on_group_toggled(self, checked: bool):
+        self._grouped_view = checked
+        if checked:
+            self._saved_column_visibility = {
+                col: not self.table.isColumnHidden(col)
+                for col in range(self.table.columnCount())
+            }
+            self.table.setHorizontalHeaderItem(
+                COL_SPOOL, QTableWidgetItem("Count"))
+        else:
+            self.table.setHorizontalHeaderItem(
+                COL_SPOOL, QTableWidgetItem(COLUMN_LABELS[COL_SPOOL]))
+            for col, visible in self._saved_column_visibility.items():
+                self.table.setColumnHidden(col, not visible)
+            self._saved_column_visibility = {}
+        self.refresh_table()
+
+    def _populate_grouped(self, entries):
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for entry in entries:
+            color_name = (entry.get("color_name") or "").strip()
+            ftype = (entry.get("detailed_filament_type")
+                     or entry.get("filament_type", "")).strip()
+            key = (color_name.lower(), ftype.lower())
+            groups[key].append(entry)
+
+        # Show only relevant columns
+        GROUPED_COLS = {COL_SPOOL, COL_COLOR, COL_TYPE, COL_WEIGHT, COL_REM,
+                        COL_LOCATION}
+        for col in range(self.table.columnCount()):
+            self.table.setColumnHidden(col, col not in GROUPED_COLS)
+
+        self.table.setRowCount(len(groups))
+
+        for row, ((_ck, _tk), group) in enumerate(
+            sorted(groups.items(), key=lambda x: x[0])
+        ):
+            rep = group[0]
+            count = len(group)
+            color_hex = rep.get("filament_color", "")
+            color_name = rep.get("color_name", "")
+            color2 = rep.get("filament_color2") or ""
+            dtype = (rep.get("detailed_filament_type")
+                     or rep.get("filament_type", ""))
+
+            total_weight = sum(e.get("spool_weight") or 0 for e in group)
+            total_remaining = sum(
+                (e.get("__inventory__", {}).get("remaining_weight_g") or 0)
+                for e in group
+            )
+            locations = sorted(set(
+                e.get("__inventory__", {}).get("location", "")
+                for e in group
+            ) - {""})
+
+            self.table.setItem(row, COL_SPOOL, self._ro_cell(f"x{count}"))
+            self.table.setItem(row, COL_COLOR,
+                               ColorItem(color_hex, color_name, color2))
+            item_color = self.table.item(row, COL_COLOR)
+            item_color.setFlags(
+                Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(row, COL_TYPE, self._ro_cell(dtype))
+            self.table.setItem(row, COL_WEIGHT,
+                               self._ro_cell(f"{total_weight} g"
+                                             if total_weight else ""))
+            self.table.setItem(row, COL_REM,
+                               self._ro_cell(f"{total_remaining} g"
+                                             if total_remaining else ""))
+            self.table.setItem(row, COL_LOCATION,
+                               self._ro_cell(", ".join(locations)))
+
+            # No entry id for grouped rows
+            self.table.item(row, COL_SPOOL).setData(
+                Qt.ItemDataRole.UserRole, None)
+
     def _apply_filters(self):
         """Show/hide rows based on active filter toggles and search text."""
         show_open_only = self.act_filter_open.isChecked()
@@ -553,8 +655,8 @@ class MainWindow(QMainWindow):
             entry_id = spool_item.data(Qt.ItemDataRole.UserRole) if spool_item else None
             entry = self.db.get_by_id(entry_id) if entry_id else None
 
-            # Open spool filter
-            if show_open_only and not hidden:
+            # Open spool filter (skip in grouped mode)
+            if show_open_only and not hidden and not self._grouped_view:
                 if entry:
                     inv = entry.get("__inventory__", {})
                     remaining = inv.get("remaining_weight_g")
@@ -605,7 +707,7 @@ class MainWindow(QMainWindow):
 
     def _on_cell_edited(self, item: QTableWidgetItem):
         """Save inline edits back to the database."""
-        if self._refreshing:
+        if self._refreshing or self._grouped_view:
             return
         row = item.row()
         col = item.column()
@@ -819,6 +921,11 @@ class MainWindow(QMainWindow):
         return spool_item.data(Qt.ItemDataRole.UserRole) if spool_item else None
 
     def _update_action_states(self):
+        if self._grouped_view:
+            self.act_edit.setEnabled(False)
+            self.act_delete.setEnabled(False)
+            self.act_weigh.setEnabled(False)
+            return
         has_selection = self._selected_id() is not None
         self.act_edit.setEnabled(has_selection)
         self.act_delete.setEnabled(has_selection)
@@ -1447,6 +1554,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Import CSV", f"Failed to import:\n{e}")
 
+    def _on_export_db(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Database", "filaments-backup.json",
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            self.db.export_db(path)
+            total = len(self.db.get_all_including_deleted())
+            self.status.showMessage(f"Exported {total} entries to {path}", 3000)
+        except OSError as e:
+            QMessageBox.warning(self, "Export Database", f"Failed to write file:\n{e}")
+
+    def _on_import_db(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Database", "",
+            "JSON files (*.json);;All files (*)",
+        )
+        if not path:
+            return
+        try:
+            added, updated = self.db.import_db(path)
+            self.refresh_table()
+            parts = []
+            if added:
+                parts.append(f"{added} added")
+            if updated:
+                parts.append(f"{updated} updated")
+            msg = ", ".join(parts) if parts else "No changes"
+            self.status.showMessage(f"Database import: {msg}.", 3000)
+            QMessageBox.information(self, "Import Database", f"Import complete: {msg}.")
+        except Exception as e:
+            QMessageBox.warning(self, "Import Database", f"Failed to import:\n{e}")
+
     def _on_open_data_folder(self):
         import os
         os.startfile(str(self.db.path.parent))
@@ -1555,7 +1697,7 @@ class MainWindow(QMainWindow):
             self,
             "About Bamboo Filament Manager",
             "<h2>Bamboo Filament Manager</h2>"
-            "<p>Version 0.2.0</p>"
+            "<p>Version 0.2.1</p>"
             "<p>Manage your filament spool inventory.<br>"
             "Scan RFID tags, track usage, and organize your collection.</p>"
             "<p><b>Requirements:</b> Proxmark3 (Iceman fork) with an HF antenna.<br>"

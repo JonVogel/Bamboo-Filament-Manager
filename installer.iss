@@ -1,7 +1,7 @@
 ; Inno Setup script for Bamboo Filament Manager
 
 #define MyAppName "Bamboo Filament Manager"
-#define MyAppVersion "0.2.0"
+#define MyAppVersion "0.2.1"
 #define MyAppPublisher "Jon Vogel"
 #define MyAppExeName "BambooFilamentManager.exe"
 
