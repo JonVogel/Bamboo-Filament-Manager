@@ -902,13 +902,14 @@ class MainWindow(QMainWindow):
             self.refresh_table()
             self.status.showMessage("Filament deleted.", 3000)
 
-    def _print_spool_label(self, entry: dict):
+    def _print_spool_label(self, entry: dict, copies: int = 1):
         from printer_manager import print_label
         try:
             spool_num = entry.get("spool_number", 0)
             spool_id = f"SPL-{spool_num:04d}" if spool_num else "label"
-            path = print_label(entry)
-            self.status.showMessage(f"Printed label for {spool_id}.", 3000)
+            path = print_label(entry, copies=copies)
+            label = f"Printed {copies} labels" if copies > 1 else "Printed label"
+            self.status.showMessage(f"{label} for {spool_id}.", 3000)
         except Exception as exc:
             QMessageBox.warning(self, "Label Error", f"Failed to print label:\n{exc}")
 
@@ -1101,6 +1102,10 @@ class MainWindow(QMainWindow):
             self.refresh_table()
             self._select_entry(entry["id"])
             self.status.showMessage("Filament added from scan.", 3000)
+
+            # Print labels if requested
+            if dlg._print_on_add:
+                self._print_spool_label(entry, copies=2)
 
     def _find_unlinked_product_entry(self, tag_data: dict) -> dict | None:
         """Find a Product Code entry with no UID that matches the scanned tag's material."""
@@ -1697,7 +1702,7 @@ class MainWindow(QMainWindow):
             self,
             "About Bamboo Filament Manager",
             "<h2>Bamboo Filament Manager</h2>"
-            "<p>Version 0.2.1</p>"
+            "<p>Version 0.2.2</p>"
             "<p>Manage your filament spool inventory.<br>"
             "Scan RFID tags, track usage, and organize your collection.</p>"
             "<p><b>Requirements:</b> Proxmark3 (Iceman fork) with an HF antenna.<br>"

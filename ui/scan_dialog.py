@@ -76,16 +76,24 @@ class ScanDialog(QDialog):
         self.extras_widget.hide()
         layout.addWidget(self.extras_widget)
 
-        # OK / Cancel buttons
-        self.button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        # Buttons
+        self._print_on_add = False
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        if self._mode != "remove":
+            self.btn_add_print = QPushButton("Add to Inventory && Print 2 Labels")
+            self.btn_add_print.setEnabled(False)
+            self.btn_add_print.clicked.connect(self._on_accept_and_print)
+            btn_row.addWidget(self.btn_add_print)
         ok_label = "Remove from Inventory" if self._mode == "remove" else "Add to Inventory"
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setText(ok_label)
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
-        self.button_box.accepted.connect(self._on_accept)
-        self.button_box.rejected.connect(self._on_cancel)
-        layout.addWidget(self.button_box)
+        self.btn_ok = QPushButton(ok_label)
+        self.btn_ok.setEnabled(False)
+        self.btn_ok.clicked.connect(self._on_accept)
+        btn_row.addWidget(self.btn_ok)
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self._on_cancel)
+        btn_row.addWidget(self.btn_cancel)
+        layout.addLayout(btn_row)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -108,7 +116,9 @@ class ScanDialog(QDialog):
         pm3_text = get_saved_pm3_path() or ""
 
         self.tag_data = None
-        self.button_box.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+        self.btn_ok.setEnabled(False)
+        if self._mode != "remove":
+            self.btn_add_print.setEnabled(False)
         self.summary_label.hide()
         self.extras_widget.hide()
         self.barcode_edit.clear()
@@ -212,17 +222,28 @@ class ScanDialog(QDialog):
 
         # Disable autoDefault on all buttons so Enter in the text fields
         # doesn't trigger "Add to Inventory" (barcode scanners send Enter)
-        ok_btn = self.button_box.button(QDialogButtonBox.StandardButton.Ok)
-        ok_btn.setEnabled(True)
-        ok_btn.setDefault(False)
-        ok_btn.setAutoDefault(False)
-        cancel_btn = self.button_box.button(QDialogButtonBox.StandardButton.Cancel)
-        cancel_btn.setAutoDefault(False)
+        self.btn_ok.setEnabled(True)
+        self.btn_ok.setDefault(False)
+        self.btn_ok.setAutoDefault(False)
+        if self._mode != "remove":
+            self.btn_add_print.setEnabled(True)
+            self.btn_add_print.setDefault(False)
+            self.btn_add_print.setAutoDefault(False)
+        self.btn_cancel.setAutoDefault(False)
 
         self.barcode_edit.setFocus()
 
     def _on_accept(self):
-        # Merge barcode and SKU into tag data before accepting
+        self._merge_extras()
+        self.accept()
+
+    def _on_accept_and_print(self):
+        self._print_on_add = True
+        self._merge_extras()
+        self.accept()
+
+    def _merge_extras(self):
+        """Merge barcode, SKU, and color name into tag data."""
         if self.tag_data:
             barcode = self.barcode_edit.text().strip()
             sku = self.sku_edit.text().strip()
@@ -233,7 +254,6 @@ class ScanDialog(QDialog):
             color_name = self.color_name_edit.text().strip()
             if color_name:
                 self.tag_data["color_name"] = color_name
-        self.accept()
 
     def _on_scan_error(self, message: str):
         self._log(f"ERROR: {message}")
