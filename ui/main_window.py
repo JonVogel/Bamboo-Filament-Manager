@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 import webbrowser
 
 from database import FilamentDB
+from version import __version__
 from rfid_parser import load_file
 from ui.bulk_scan_dialog import BulkScanDialog
 from ui.edit_dialog import EditDialog
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
         self._grouped_view = False
         self._saved_column_visibility = {}
         self._scan_buffer = ""  # Keystroke buffer for barcode scanner input
-        self.setWindowTitle("Bamboo Filament Manager")
+        self.setWindowTitle(f"Bamboo Filament Manager v{__version__}")
         self.resize(1000, 600)
 
         self._build_toolbar()
@@ -1702,7 +1703,7 @@ class MainWindow(QMainWindow):
             self,
             "About Bamboo Filament Manager",
             "<h2>Bamboo Filament Manager</h2>"
-            "<p>Version 0.2.2</p>"
+            f"<p>Version {__version__}</p>"
             "<p>Manage your filament spool inventory.<br>"
             "Scan RFID tags, track usage, and organize your collection.</p>"
             "<p><b>Requirements:</b> Proxmark3 (Iceman fork) with an HF antenna.<br>"
